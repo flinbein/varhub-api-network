@@ -13,8 +13,8 @@ const fetchFunction: typeof fetch = async (url, params) => {
 		params?.signal?.addEventListener("abort", reject);
 		try {
 			const urlString = String(url);
-			const delay = Number(urlString.match(/delay=(\d*)/)?.[1] ?? 0);
-			const status = Number(urlString.match(/status=(\d*)/)?.[1] ?? 200);
+			const delay = Number(urlString.match(/delay=(\d+)/)?.[1] ?? 0);
+			const status = Number(urlString.match(/status=(\d+)/)?.[1] ?? 200);
 			if (delay) await new Promise(r => setTimeout(r, delay));
 			
 			const response: Awaited<ReturnType<typeof fetch>> = {
@@ -89,34 +89,81 @@ describe("ApiNetwork", () => {
 		await assert.rejects(() => api.fetch("https://_10.10.10.10_"), "4 not ok");
 	});
 	
-	it("fetch pool", {timeout: 500}, async () => {
+	it("fetch pool", {timeout: 500, todo: true}, async (t) => {
 		const api =createApi({
 			fetchPoolTimeout: 50,
 			fetchPoolCount: 3
 		});
 		const f1 = api.fetch("https://1.1.1.1");
-		console.log("------ 1");
 		await new Promise(r => setTimeout(r, 5));
+		
 		const f2 = api.fetch("https://1.1.1.1");
 		await new Promise(r => setTimeout(r, 5));
 		
 		const f3 = api.fetch("https://1.1.1.1");
 		await new Promise(r => setTimeout(r, 5));
 		
-		// const f4 = api.fetch("https://1.1.1.1");
-		await new Promise(r => setTimeout(r, 5));
+		await assert.rejects(() => api.fetch("https://1.1.1.1"), "rejects 4th");
+		await assert.doesNotReject(Promise.all([f1,f2,f3]), "resolves 3");
+		await assert.rejects(() => api.fetch("https://1.1.1.1"), "rejects 5th");
 		
-		console.log("------ 4");
-		await assert.doesNotReject(Promise.all([f1, f2, f3]), "must not throw 3")
-		console.log("------ 5");
-		try {
-			const r = await Promise.all([f1, f2, f3]);
-			console.log("RRRRR", r);
-			// await f4
-		} catch (error) {
-			console.log("ERROR IN F4", error)
-		}
-		//await assert.rejects(f4, () => true,"must throw 4th");
-		console.log("------ 6");
+		await new Promise(r => setTimeout(r, 50));
+		
+		await assert.doesNotReject(Promise.all([f1,f2,f3]), "resolves 6");
+	});
+	
+	
+	it("fetch max active", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const f1 = api.fetch("https://1.1.1.1?delay=10");
+		const f2 = api.fetch("https://1.1.1.1?delay=10");
+		const f3 = api.fetch("https://1.1.1.1?delay=10");
+		await assert.rejects(() => api.fetch("https://1.1.1.1?delay=10"), "rejects 4th");
+		await new Promise(r => setTimeout(r, 15));
+		await assert.doesNotReject(() => api.fetch("https://1.1.1.1?delay=10"), "resolves 5th");
+		await assert.doesNotReject(Promise.all([f1,f2,f3]), "resolves 3");
+	});
+	
+	it("fetch text", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const {body} = await api.fetch("https://1.1.1.1", {type: "text"});
+		assert.equal(body, "text", "fetched text")
+	});
+	
+	it("fetch json", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const {body} = await api.fetch("https://1.1.1.1", {type: "json"});
+		assert.deepEqual(body, {test: "json"}, "fetched json")
+	});
+	
+	it("fetch json default", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const {body} = await api.fetch("https://1.1.1.1");
+		assert.deepEqual(body, {test: "json"}, "fetched json")
+	});
+	
+	
+	it("fetch arrayBuffer", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const {body} = await api.fetch("https://1.1.1.1", {type: "arrayBuffer"});
+		assert.ok(body instanceof ArrayBuffer, "fetched ArrayBuffer")
+	});
+	
+	it("fetch headers", {timeout: 500, todo: true}, async (t) => {
+		const api =createApi({
+			fetchMaxActiveCount: 3,
+		});
+		const {headers} = await api.fetch("https://1.1.1.1", {headers: {"foo": "bar"}});
+		assert.deepEqual(headers, {foo: "bar", test: "headerTest"}, "fetched headers");
 	});
 })

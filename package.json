@@ -4,6 +4,7 @@
   "node": ">=20.0.0",
   "type": "module",
   "types": "./src/index.ts",
+  "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",
     "test": "node --import=./test/register.js --test --test-reporter spec ./test/**/*.test.ts",
