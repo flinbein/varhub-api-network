@@ -1,6 +1,6 @@
 {
-  "name": "varhub-api-network",
-  "version": "1.0.0",
+  "name": "@flinbein/varhub-api-network",
+  "version": "1.0.1",
   "node": ">=20.0.0",
   "type": "module",
   "types": "./src/index.ts",

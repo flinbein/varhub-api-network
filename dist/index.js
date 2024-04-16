@@ -2,6 +2,9 @@ import { resolve } from "node:dns";
 import { isIP } from "node:net";
 import { Netmask } from "netmask";
 export default function createApi(config = {}) {
+    const whitelistDomains = config.domainWhitelist ? [...config.domainWhitelist] : undefined;
+    const blacklistDomains = config.domainBlacklist ? [...config.domainBlacklist] : undefined;
+    const fetchAllowIp = config.fetchAllowIp ?? false;
     const whitelistMasks = config.ipWhitelist?.map(mask => new Netmask(mask));
     const blacklistMasks = config.ipBlacklist?.map(mask => new Netmask(mask));
     const fetchFn = config.fetchFunction ?? fetch;
@@ -19,7 +22,7 @@ export default function createApi(config = {}) {
             this.#abortControllers.add(abortCtrl);
             try {
                 const url = new URL(String(urlParam));
-                const hostIsValid = await this.#isAddressAllowed(url.host);
+                const hostIsValid = await this.#isFetchHostnameAllowed(url.hostname);
                 if (this.#disposed)
                     throw new Error("api disposed");
                 if (!hostIsValid)
@@ -80,11 +83,16 @@ export default function createApi(config = {}) {
                 throw new Error("fetch limit");
             }
         }
-        async #isAddressAllowed(address) {
-            if (isIP(address))
-                return this.#isIpAllowed(address);
+        async #isFetchHostnameAllowed(hostname) {
+            if (isIP(hostname)) {
+                if (!fetchAllowIp)
+                    return false;
+                return this.#isIpAllowed(hostname);
+            }
+            if (!await this.#isDomainAllowed(hostname))
+                return false;
             return await new Promise((promiseResolve, promiseReject) => {
-                resolveFn(address, (error, addresses) => {
+                resolveFn(hostname, (error, addresses) => {
                     try {
                         if (error !== null)
                             promiseReject(error);
@@ -95,6 +103,25 @@ export default function createApi(config = {}) {
                     }
                 });
             });
+        }
+        async #isDomainAllowed(domain) {
+            if (blacklistDomains) {
+                for (let domainPattern of blacklistDomains) {
+                    if (domainPattern === domain)
+                        return false;
+                    if (domainPattern instanceof RegExp && domain.match(domainPattern))
+                        return false;
+                }
+            }
+            if (!whitelistDomains)
+                return true;
+            for (let domainPattern of whitelistDomains) {
+                if (domainPattern === domain)
+                    return true;
+                if (domainPattern instanceof RegExp && domain.match(domainPattern))
+                    return true;
+            }
+            return false;
         }
         #isIpAllowed(ip) {
             if (blacklistMasks) {

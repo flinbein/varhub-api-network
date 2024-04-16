@@ -18,12 +18,25 @@ export type FetchParams = {
 };
 
 export interface NetworkConfig {
+	/** timeout to check fetchPoolCount */
 	fetchPoolTimeout?: number;
+	/** Maximum number of fetch processes starts per fetchPoolTimeout */
 	fetchPoolCount?: number;
+	/** Maximum number of active fetch processes */
 	fetchMaxActiveCount?: number;
+	/** allow fetch by ip. Example: `fetch("http://10.20.30.40:8088/service/data")`*/
+	fetchAllowIp?: boolean;
+	/** Defines whitelist of ip. Example: `["127.0.0.0/8", "172.16.0.0/12"]` */
 	ipWhitelist?: string[];
+	/** Defines blacklist of ip. Example: `["127.0.0.0/8", "172.16.0.0/12"]`. Blacklist has high priority */
 	ipBlacklist?: string[];
+	/** Defines whitelist of domains. Example: `["localhost", /.*\.google.ru$/]`.*/
+	domainBlacklist?: (string|RegExp)[];
+	/** Defines blacklist of domains. Example: `["localhost", /.*\.google.ru$/]`. Blacklist has high priority */
+	domainWhitelist?: (string|RegExp)[];
+	/** mock function `fetch` */
 	fetchFunction?: typeof fetch;
+	/** mock function `resolve` */
 	resolveFunction?: (hostname: string, callback: (error: any, ipList: string[]) => void) => void;
 }
 
@@ -39,6 +52,9 @@ export interface FetchResult {
 }
 export default function createApi(config: NetworkConfig = {}): new () => ApiHelper {
 	
+	const whitelistDomains = config.domainWhitelist ? [...config.domainWhitelist] : undefined;
+	const blacklistDomains = config.domainBlacklist ? [...config.domainBlacklist] : undefined;
+	const fetchAllowIp = config.fetchAllowIp ?? false;
 	const whitelistMasks = config.ipWhitelist?.map(mask => new Netmask(mask));
 	const blacklistMasks = config.ipBlacklist?.map(mask => new Netmask(mask));
 	
@@ -59,7 +75,7 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 			this.#abortControllers.add(abortCtrl);
 			try {
 				const url = new URL(String(urlParam));
-				const hostIsValid = await this.#isAddressAllowed(url.host);
+				const hostIsValid = await this.#isFetchHostnameAllowed(url.hostname);
 				if (this.#disposed) throw new Error("api disposed");
 				if (!hostIsValid) throw new Error("address blocked");
 				
@@ -115,10 +131,14 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 			}
 		}
 		
-		async #isAddressAllowed(address: string){
-			if (isIP(address)) return this.#isIpAllowed(address);
+		async #isFetchHostnameAllowed(hostname: string){
+			if (isIP(hostname)) {
+				if (!fetchAllowIp) return false;
+				return this.#isIpAllowed(hostname);
+			}
+			if (!await this.#isDomainAllowed(hostname)) return false;
 			return await new Promise<boolean>((promiseResolve, promiseReject) => {
-				resolveFn(address, (error, addresses) => {
+				resolveFn(hostname, (error, addresses) => {
 					try {
 						if (error !== null) promiseReject(error);
 						promiseResolve(addresses.every(ip => this.#isIpAllowed(ip)));
@@ -127,6 +147,21 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 					}
 				})
 			})
+		}
+		
+		async #isDomainAllowed(domain: string){
+			if (blacklistDomains) {
+				for (let domainPattern of blacklistDomains) {
+					if (domainPattern === domain) return false;
+					if (domainPattern instanceof RegExp && domain.match(domainPattern)) return false;
+				}
+			}
+			if (!whitelistDomains) return true;
+			for (let domainPattern of whitelistDomains) {
+				if (domainPattern === domain) return true;
+				if (domainPattern instanceof RegExp && domain.match(domainPattern)) return true;
+			}
+			return false;
 		}
 		
 		#isIpAllowed(ip: string){
