@@ -18,6 +18,8 @@ export type FetchParams = {
 };
 
 export interface NetworkConfig {
+	/** max content length  */
+	fetchMaxContentLength?: number;
 	/** timeout to check fetchPoolCount */
 	fetchPoolTimeout?: number;
 	/** Maximum number of fetch processes starts per fetchPoolTimeout */
@@ -52,6 +54,7 @@ export interface FetchResult {
 }
 export default function createApi(config: NetworkConfig = {}): new () => ApiHelper {
 	
+	const fetchMaxContentLength = config.fetchMaxContentLength;
 	const whitelistDomains = config.domainWhitelist ? [...config.domainWhitelist] : undefined;
 	const blacklistDomains = config.domainBlacklist ? [...config.domainBlacklist] : undefined;
 	const fetchAllowIp = config.fetchAllowIp ?? false;
@@ -81,7 +84,7 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				
 				let body: ArrayBuffer | string | null = null;
 				if (param.body instanceof ArrayBuffer || typeof param.body === "string") body = param.body;
-				const fetchResult = await fetchFn(url, {
+				const response = await fetchFn(url, {
 					body,
 					headers: param.headers !== undefined ? {...(param.headers)} as Record<string, string> : undefined,
 					signal: abortCtrl.signal,
@@ -94,20 +97,22 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				});
 				if (this.#disposed) throw new Error("api disposed");
 				
+				this.#checkFetchContentLength(response);
+				
 				let responseBody = undefined;
-				if (param.type === "text") responseBody = await fetchResult.text();
-				else if (param.type === "arrayBuffer") responseBody = await fetchResult.arrayBuffer();
-				else if (param.type === "json" || !param.type) responseBody = await fetchResult.json();
+				if (param.type === "text") responseBody = await response.text();
+				else if (param.type === "arrayBuffer") responseBody = await response.arrayBuffer();
+				else if (param.type === "json" || !param.type) responseBody = await response.json();
 				if (this.#disposed) throw new Error("api disposed");
 				
 				return {
-					url: fetchResult.url,
-					ok: fetchResult.ok,
-					type: fetchResult.type,
-					statusText: fetchResult.statusText,
-					redirected: fetchResult.redirected,
-					status: fetchResult.status,
-					headers: Object.fromEntries(fetchResult.headers.entries()),
+					url: response.url,
+					ok: response.ok,
+					type: response.type,
+					statusText: response.statusText,
+					redirected: response.redirected,
+					status: response.status,
+					headers: Object.fromEntries(response.headers.entries()),
 					body: responseBody,
 				};
 			} finally {
@@ -182,6 +187,15 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 			if (this.#abortControllers.size >= config.fetchMaxActiveCount) {
 				throw new Error("fetch limit");
 			}
+		}
+		
+		#checkFetchContentLength(response: Awaited<ReturnType<typeof fetch>>){
+			if (fetchMaxContentLength == undefined) return;
+			const contentLength = response.headers.get("content-length");
+			if (!contentLength) throw new Error("fetch content length");
+			const len = Number(contentLength);
+			if (Number.isNaN(len)) throw new Error("fetch content length");
+			if (len > fetchMaxContentLength) throw new Error("fetch content length");
 		}
 		
 		[Symbol.dispose] = () => {

@@ -1,10 +1,11 @@
 {
   "name": "@flinbein/varhub-api-network",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "node": ">=20.0.0",
   "type": "module",
   "types": "./src/index.ts",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "scripts": {
     "build": "tsc",
     "test": "node --import=./test/register.js --test --test-reporter spec ./test/**/*.test.ts",

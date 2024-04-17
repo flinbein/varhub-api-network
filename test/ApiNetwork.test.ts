@@ -220,4 +220,17 @@ describe("ApiNetwork", () => {
 		await assert.rejects(() => api.fetch("https://_20.20.20.20_"), "4 not ok");
 		await assert.rejects(() => api.fetch("https://_20.20.20.20_:80"), "5 not ok");
 	});
+	
+	it("content length", {timeout: 500}, async () => {
+		const api =createApi({
+			fetchMaxContentLength: 100,
+			fetchAllowIp: true,
+		});
+		await assert.doesNotReject(() => api.fetch("https://1.1.1.1", {headers: {"content-length": "50"}}), "1 ok");
+		await assert.rejects(() => api.fetch("https://1.1.1.1", {headers: {"content-length": "500"}}), "2 not ok");
+		await assert.rejects(() => api.fetch("https://1.1.1.1", {headers: {"content-length": "unknown"}}), "3 not ok");
+		await assert.rejects(() => api.fetch("https://1.1.1.1", {headers: {"x-content-length": "10"}}), "4 not ok");
+		await assert.doesNotReject(() => api.fetch("https://1.1.1.1", {headers: {"content-length": "0"}}), "5 ok");
+		await assert.doesNotReject(() => api.fetch("https://1.1.1.1", {headers: {"content-length": "100"}}), "6 ok");
+	});
 })
