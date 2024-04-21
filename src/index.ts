@@ -1,15 +1,34 @@
 import {resolve} from "node:dns"
 import {isIP} from "node:net"
 import {Netmask} from "netmask"
-import { ApiHelper } from "@flinbein/varhub/src/controllers/ApiHelperController.js";
+import type { ApiHelper } from "@flinbein/varhub";
+
+export interface NetworkApi {
+	fetch<T extends keyof BodyType>(url: string, params?: FetchParams<T>): Promise<FetchResult<T>>
+}
 
 type RequestInit = Parameters<typeof fetch>[1] & {};
 
-export type FetchParams = {
-	type?: "json" | "text" | "arrayBuffer"
+type BodyType = {
+	json: unknown;
+	text: string;
+	arrayBuffer: ArrayBuffer;
+	formData: Array<[string, string | FileJson]>
+}
+
+interface FileJson {
+	type: string,
+	size: number,
+	name: string,
+	lastModified: number,
+	data: ArrayBuffer
+}
+
+export type FetchParams<T extends keyof BodyType = keyof BodyType> = {
+	type?: T
 	method?: RequestInit["method"],
 	headers?: Record<string, string>,
-	body?: string | ArrayBuffer
+	body?: string | ArrayBuffer | Array<[string, string] | [string, FileJson] | [string, ArrayBuffer, string]>
 	redirect?: RequestInit["redirect"],
 	credentials?: RequestInit["credentials"]
 	mode?: RequestInit["mode"]
@@ -36,13 +55,15 @@ export interface NetworkConfig {
 	domainBlacklist?: (string|RegExp)[];
 	/** Defines blacklist of domains. Example: `["localhost", /.*\.google.ru$/]`. Blacklist has high priority */
 	domainWhitelist?: (string|RegExp)[];
+	/** add custom headers for fetch */
+	fetchHeaders?: Record<string, string>;
 	/** mock function `fetch` */
 	fetchFunction?: typeof fetch;
 	/** mock function `resolve` */
 	resolveFunction?: (hostname: string, callback: (error: any, ipList: string[]) => void) => void;
 }
 
-export interface FetchResult {
+export interface FetchResult<T extends keyof BodyType = keyof BodyType> {
 	url: string,
 	ok: boolean,
 	type: string,
@@ -50,7 +71,7 @@ export interface FetchResult {
 	redirected: boolean,
 	status: number,
 	headers: Record<string, string>,
-	body: any,
+	body: BodyType[T],
 }
 export default function createApi(config: NetworkConfig = {}): new () => ApiHelper {
 	
@@ -60,6 +81,7 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 	const fetchAllowIp = config.fetchAllowIp ?? false;
 	const whitelistMasks = config.ipWhitelist?.map(mask => new Netmask(mask));
 	const blacklistMasks = config.ipBlacklist?.map(mask => new Netmask(mask));
+	const fetchHeaders = {...config.fetchHeaders};
 	
 	const fetchFn = config.fetchFunction ?? fetch;
 	const resolveFn = config.resolveFunction ?? resolve;
@@ -82,11 +104,37 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				if (this.#disposed) throw new Error("api disposed");
 				if (!hostIsValid) throw new Error("address blocked");
 				
-				let body: ArrayBuffer | string | null = null;
-				if (param.body instanceof ArrayBuffer || typeof param.body === "string") body = param.body;
+				let body: ArrayBuffer | string | FormData | null = null;
+				const paramBody = param.body;
+				if (paramBody instanceof ArrayBuffer || typeof paramBody === "string") body = paramBody;
+				else if (Array.isArray(paramBody)) {
+					body = new FormData();
+					for (const [name, value, fileName] of paramBody) {
+						if (typeof value === "string") {
+							body.append(name, value)
+						} else if (value instanceof ArrayBuffer) {
+							body.append(name, new File([new Uint8Array(value)], fileName ?? ""), fileName);
+						} else {
+							const file = new File([new Uint8Array(value.data)], value.name, {
+								type: value.type,
+								lastModified: value.lastModified,
+							});
+							body.append(name, file, fileName ?? file.name);
+						}
+					}
+				}
+				const headers = new Headers();
+				if (param.headers) {
+					for (let headerName in param.headers) {
+						headers.set(headerName, String(param.headers[headerName]));
+					}
+				}
+				for (let headerName in fetchHeaders) {
+					headers.set(headerName, String(fetchHeaders[headerName]));
+				}
 				const response = await fetchFn(url, {
 					body,
-					headers: param.headers !== undefined ? {...(param.headers)} as Record<string, string> : undefined,
+					headers,
 					signal: abortCtrl.signal,
 					mode: param.mode !== undefined ? String(param.mode) as any : undefined,
 					redirect: param.redirect !== undefined ? String(param.redirect) as any : undefined,
@@ -99,10 +147,31 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				
 				this.#checkFetchContentLength(response);
 				
-				let responseBody = undefined;
-				if (param.type === "text") responseBody = await response.text();
-				else if (param.type === "arrayBuffer") responseBody = await response.arrayBuffer();
-				else if (param.type === "json" || !param.type) responseBody = await response.json();
+				let resultData = undefined;
+				let type = param.type;
+				if (!type) {
+					const contentType = response.headers.get("content-type");
+					if (contentType?.startsWith("application/json")) type = "json";
+					else if (contentType?.startsWith("multipart/form-data")) type = "formData";
+					else if (contentType === "text" || contentType?.startsWith("text/")) type = "text";
+					else if (contentType?.includes("+xml")) type = "text";
+					else type = "arrayBuffer";
+				}
+				if (type === "formData") {
+					resultData = [];
+					const formData = await response.formData();
+					await Promise.all([...formData.entries()].map(async ([name, value]) => {
+						if (typeof value === "string") {
+							resultData.push([name, value]);
+						} else {
+							resultData.push([name, await mapFileToJson(value)])
+						}
+					}))
+				}
+				if (type === "text") resultData = await response.text();
+				else if (type === "arrayBuffer") resultData = await response.arrayBuffer();
+				else if (type === "json") resultData = await response.json();
+				else if (!type) resultData = await response.text();
 				if (this.#disposed) throw new Error("api disposed");
 				
 				return {
@@ -113,7 +182,7 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 					redirected: response.redirected,
 					status: response.status,
 					headers: Object.fromEntries(response.headers.entries()),
-					body: responseBody,
+					body: resultData,
 				};
 			} finally {
 				this.#abortControllers.delete(abortCtrl);
@@ -206,4 +275,17 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 		}
 	}
 	return ApiNetwork;
+}
+
+
+
+async function mapFileToJson(file: File): Promise<FileJson> {
+	file.lastModified
+	return {
+		type: file.type,
+		size: file.size,
+		name: file.name,
+		lastModified: file.lastModified,
+		data: await file.arrayBuffer()
+	}
 }
