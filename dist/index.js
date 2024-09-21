@@ -1,5 +1,6 @@
 import { resolve } from "node:dns";
 import { isIP } from "node:net";
+import EventEmitter from "node:events";
 import { Netmask } from "netmask";
 export default function createApi(config = {}) {
     const fetchMaxContentLength = config.fetchMaxContentLength;
@@ -14,14 +15,32 @@ export default function createApi(config = {}) {
     class ApiNetwork {
         #disposed = false;
         #abortControllers = new Set();
-        fetch = async (urlParam, param) => {
-            param ||= {};
+        #events = (() => {
+            const emitter = new EventEmitter();
+            emitter.setMaxListeners(config.fetchMaxAwaitingProcesses ?? 0);
+            return emitter;
+        })();
+        fetch = async (urlParam, param = {}) => {
             if (this.#disposed)
                 throw new Error("api disposed");
-            this.#checkFetchTimeout();
-            this.#checkFetchMaxActiveCount();
+            while (this.#hasTimeoutBlock() || this.#hasMaxActiveBlock()) {
+                await this.#waitForUpdate();
+            }
+            if (this.#disposed)
+                throw new Error("api disposed");
             const abortCtrl = new AbortController();
             this.#abortControllers.add(abortCtrl);
+            if (config.fetchPoolTimeout) {
+                if (!this.#fetchPoolTimeoutId) {
+                    this.#fetchPoolTimeoutId = setTimeout(() => {
+                        this.#fetchPoolTimeoutId = undefined;
+                        this.#fetchPoolCounter = 0;
+                        this.#events.emit("update");
+                    }, config.fetchPoolTimeout);
+                }
+                this.#fetchPoolCounter++;
+            }
+            let abortTimeout;
             try {
                 const url = new URL(String(urlParam));
                 const hostIsValid = await this.#isFetchHostnameAllowed(url.hostname);
@@ -59,6 +78,12 @@ export default function createApi(config = {}) {
                 }
                 for (let headerName in fetchHeaders) {
                     headers.set(headerName, String(fetchHeaders[headerName]));
+                }
+                if (param.timeout && param.timeout > 0) {
+                    const timeout = +param.timeout;
+                    abortTimeout = setTimeout(() => {
+                        abortCtrl.abort("aborted by timeout");
+                    }, timeout);
                 }
                 const response = await fetchFn(url, {
                     body,
@@ -123,24 +148,26 @@ export default function createApi(config = {}) {
                 };
             }
             finally {
+                if (abortTimeout !== undefined)
+                    clearTimeout(abortTimeout);
                 this.#abortControllers.delete(abortCtrl);
+                this.#events.emit("update");
             }
         };
+        async #waitForUpdate() {
+            if (this.#events.listenerCount("update") >= this.#events.getMaxListeners()) {
+                throw new Error("fetch pool overflow");
+            }
+            await new Promise((resolve, reject) => {
+                this.#events.once("update", e => e ? reject(e) : resolve());
+            });
+        }
         #fetchPoolTimeoutId;
         #fetchPoolCounter = 0;
-        #checkFetchTimeout() {
+        #hasTimeoutBlock() {
             if (!config.fetchPoolTimeout)
-                return;
-            if (!this.#fetchPoolTimeoutId) {
-                this.#fetchPoolTimeoutId = setTimeout(() => {
-                    this.#fetchPoolTimeoutId = undefined;
-                    this.#fetchPoolCounter = 0;
-                }, config.fetchPoolTimeout);
-            }
-            this.#fetchPoolCounter++;
-            if (this.#fetchPoolCounter > (config.fetchPoolCount ?? 0)) {
-                throw new Error("fetch limit");
-            }
+                return false;
+            return this.#fetchPoolCounter >= (config.fetchPoolCount ?? 0);
         }
         async #isFetchHostnameAllowed(hostname) {
             if (isIP(hostname)) {
@@ -197,12 +224,10 @@ export default function createApi(config = {}) {
             }
             return false;
         }
-        #checkFetchMaxActiveCount() {
+        #hasMaxActiveBlock() {
             if (typeof config.fetchMaxActiveCount !== "number")
-                return;
-            if (this.#abortControllers.size >= config.fetchMaxActiveCount) {
-                throw new Error("fetch limit");
-            }
+                return false;
+            return this.#abortControllers.size >= config.fetchMaxActiveCount;
         }
         #checkFetchContentLength(response) {
             if (fetchMaxContentLength == undefined)
@@ -217,6 +242,9 @@ export default function createApi(config = {}) {
                 throw new Error("fetch content length");
         }
         [Symbol.dispose] = () => {
+            this.#events.emit("update", new Error("api disposed"));
+            this.#events.setMaxListeners(0);
+            this.#events.removeAllListeners();
             this.#disposed = true;
             for (const abortController of this.#abortControllers) {
                 abortController.abort("aborted by api");

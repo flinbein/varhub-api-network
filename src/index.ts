@@ -1,5 +1,6 @@
 import {resolve} from "node:dns"
 import {isIP} from "node:net"
+import EventEmitter from "node:events"
 import {Netmask} from "netmask"
 import type { ApiHelper } from "@flinbein/varhub";
 
@@ -33,7 +34,8 @@ export type FetchParams<T extends keyof BodyType = keyof BodyType> = {
 	credentials?: RequestInit["credentials"]
 	mode?: RequestInit["mode"]
 	referrer?: RequestInit["referrer"]
-	referrerPolicy?: RequestInit["referrerPolicy"]
+	referrerPolicy?: RequestInit["referrerPolicy"],
+	timeout?: number,
 };
 
 export interface NetworkConfig {
@@ -45,6 +47,8 @@ export interface NetworkConfig {
 	fetchPoolCount?: number;
 	/** Maximum number of active fetch processes */
 	fetchMaxActiveCount?: number;
+	/** Maximum fetch processes on pause */
+	fetchMaxAwaitingProcesses?: number;
 	/** allow fetch by ip. Example: `fetch("http://10.20.30.40:8088/service/data")`*/
 	fetchAllowIp?: boolean;
 	/** Defines whitelist of ip. Example: `["127.0.0.0/8", "172.16.0.0/12"]` */
@@ -90,14 +94,31 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 		#disposed = false;
 		readonly #abortControllers = new Set<AbortController>();
 		
-		fetch = async (urlParam: string, param?: FetchParams): Promise<FetchResult> => {
-			param ||= {}
+		#events = (() => {
+			const emitter = new EventEmitter<{update:[error?: any]}>();
+			emitter.setMaxListeners(config.fetchMaxAwaitingProcesses ?? 0);
+			return emitter;
+		})();
+		
+		fetch = async (urlParam: string, param: FetchParams = {}): Promise<FetchResult> => {
 			if (this.#disposed) throw new Error("api disposed");
-			this.#checkFetchTimeout();
-			this.#checkFetchMaxActiveCount();
-			
+			while (this.#hasTimeoutBlock() || this.#hasMaxActiveBlock()){
+				await this.#waitForUpdate();
+			}
+			if (this.#disposed) throw new Error("api disposed");
 			const abortCtrl = new AbortController();
 			this.#abortControllers.add(abortCtrl);
+			if (config.fetchPoolTimeout) {
+				if (!this.#fetchPoolTimeoutId) {
+					this.#fetchPoolTimeoutId = setTimeout(() => {
+						this.#fetchPoolTimeoutId = undefined;
+						this.#fetchPoolCounter = 0;
+						this.#events.emit("update");
+					}, config.fetchPoolTimeout);
+				}
+				this.#fetchPoolCounter++;
+			}
+			let abortTimeout: ReturnType<typeof setTimeout> | undefined;
 			try {
 				const url = new URL(String(urlParam));
 				const hostIsValid = await this.#isFetchHostnameAllowed(url.hostname);
@@ -131,6 +152,12 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				}
 				for (let headerName in fetchHeaders) {
 					headers.set(headerName, String(fetchHeaders[headerName]));
+				}
+				if (param.timeout && param.timeout > 0) {
+					const timeout = +param.timeout;
+					abortTimeout = setTimeout(() => {
+						abortCtrl.abort("aborted by timeout");
+					}, timeout)
 				}
 				const response = await fetchFn(url, {
 					body,
@@ -185,24 +212,27 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 					body: resultData,
 				};
 			} finally {
+				if (abortTimeout !== undefined) clearTimeout(abortTimeout);
 				this.#abortControllers.delete(abortCtrl);
+				this.#events.emit("update");
 			}
+		}
+		
+		async #waitForUpdate(): Promise<void> {
+			if (this.#events.listenerCount("update") >= this.#events.getMaxListeners()) {
+				throw new Error("fetch pool overflow");
+			}
+			await new Promise<void>((resolve, reject) => {
+				this.#events.once("update", e => e ? reject(e) : resolve());
+			});
 		}
 		
 		#fetchPoolTimeoutId: undefined | ReturnType<typeof setTimeout>;
 		#fetchPoolCounter = 0;
-		#checkFetchTimeout(){
-			if (!config.fetchPoolTimeout) return;
-			if (!this.#fetchPoolTimeoutId) {
-				this.#fetchPoolTimeoutId = setTimeout(() => {
-					this.#fetchPoolTimeoutId = undefined;
-					this.#fetchPoolCounter = 0;
-				}, config.fetchPoolTimeout);
-			}
-			this.#fetchPoolCounter++;
-			if (this.#fetchPoolCounter > (config.fetchPoolCount ?? 0)) {
-				throw new Error("fetch limit");
-			}
+		#hasTimeoutBlock(){
+			if (!config.fetchPoolTimeout) return false;
+			return this.#fetchPoolCounter >= (config.fetchPoolCount ?? 0);
+			
 		}
 		
 		async #isFetchHostnameAllowed(hostname: string){
@@ -251,11 +281,10 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 			return false;
 		}
 		
-		#checkFetchMaxActiveCount(){
-			if (typeof config.fetchMaxActiveCount !== "number") return;
-			if (this.#abortControllers.size >= config.fetchMaxActiveCount) {
-				throw new Error("fetch limit");
-			}
+		#hasMaxActiveBlock(){
+			if (typeof config.fetchMaxActiveCount !== "number") return false;
+			return this.#abortControllers.size >= config.fetchMaxActiveCount;
+			
 		}
 		
 		#checkFetchContentLength(response: Awaited<ReturnType<typeof fetch>>){
@@ -268,6 +297,9 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 		}
 		
 		[Symbol.dispose] = () => {
+			this.#events.emit("update", new Error("api disposed"));
+			this.#events.setMaxListeners(0);
+			this.#events.removeAllListeners();
 			this.#disposed = true;
 			for (const abortController of this.#abortControllers) {
 				abortController.abort("aborted by api");
