@@ -2,7 +2,7 @@ import {resolve} from "node:dns"
 import {isIP} from "node:net"
 import EventEmitter from "node:events"
 import {Netmask} from "netmask"
-import type { ApiHelper } from "@flinbein/varhub";
+import type { ApiHelper, Room } from "@flinbein/varhub";
 
 export interface NetworkApi {
 	fetch<T extends keyof BodyType>(url: string, params?: FetchParams<T>): Promise<FetchResult<T>>
@@ -60,7 +60,7 @@ export interface NetworkConfig {
 	/** Defines blacklist of domains. Example: `["localhost", /.*\.google.ru$/]`. Blacklist has high priority */
 	domainWhitelist?: (string|RegExp)[];
 	/** add custom headers for fetch */
-	fetchHeaders?: Record<string, string> | ((headers: Record<string, string>) => void | Record<string, string>);
+	fetchHeaders?: Record<string, string> | ((room: Room, headers: Record<string, string>) => void | Record<string, string>);
 	/** mock function `fetch` */
 	fetchFunction?: typeof fetch;
 	/** mock function `resolve` */
@@ -77,7 +77,7 @@ export interface FetchResult<T extends keyof BodyType = keyof BodyType> {
 	headers: Record<string, string>,
 	body: BodyType[T],
 }
-export default function createApi(config: NetworkConfig = {}): new () => ApiHelper {
+export default function createApi(config: NetworkConfig = {}): new (room: Room) => ApiHelper {
 	
 	const fetchMaxContentLength = config.fetchMaxContentLength;
 	const whitelistDomains = config.domainWhitelist ? [...config.domainWhitelist] : undefined;
@@ -93,12 +93,18 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 	class ApiNetwork implements Disposable {
 		#disposed = false;
 		readonly #abortControllers = new Set<AbortController>();
+		readonly #room: Room;
+		
 		
 		#events = (() => {
 			const emitter = new EventEmitter<{update:[error?: any]}>();
 			emitter.setMaxListeners(config.fetchMaxAwaitingProcesses ?? 0);
 			return emitter;
 		})();
+		
+		constructor(room: Room) {
+			this.#room = room;
+		}
 		
 		fetch = async (urlParam: string, param: FetchParams = {}): Promise<FetchResult> => {
 			if (this.#disposed) throw new Error("api disposed");
@@ -152,7 +158,7 @@ export default function createApi(config: NetworkConfig = {}): new () => ApiHelp
 				}
 				if (typeof fetchHeaders === "function") {
 					const headersObj = {...param.headers};
-					const headersResult = fetchHeaders(headersObj) ?? headersObj;
+					const headersResult = fetchHeaders(this.#room, headersObj) ?? headersObj;
 					for (let headerName in headersResult) {
 						headers.set(headerName, String(headersResult[headerName]));
 					}

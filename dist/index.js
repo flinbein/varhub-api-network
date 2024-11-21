@@ -15,11 +15,15 @@ export default function createApi(config = {}) {
     class ApiNetwork {
         #disposed = false;
         #abortControllers = new Set();
+        #room;
         #events = (() => {
             const emitter = new EventEmitter();
             emitter.setMaxListeners(config.fetchMaxAwaitingProcesses ?? 0);
             return emitter;
         })();
+        constructor(room) {
+            this.#room = room;
+        }
         fetch = async (urlParam, param = {}) => {
             if (this.#disposed)
                 throw new Error("api disposed");
@@ -78,7 +82,7 @@ export default function createApi(config = {}) {
                 }
                 if (typeof fetchHeaders === "function") {
                     const headersObj = { ...param.headers };
-                    const headersResult = fetchHeaders(headersObj) ?? headersObj;
+                    const headersResult = fetchHeaders(this.#room, headersObj) ?? headersObj;
                     for (let headerName in headersResult) {
                         headers.set(headerName, String(headersResult[headerName]));
                     }

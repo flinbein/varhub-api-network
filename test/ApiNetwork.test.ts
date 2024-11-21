@@ -2,6 +2,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { NetworkConfig, default as createNetworkApi, FetchResult, FetchParams } from "../src/index.js";
+import { Room } from "@flinbein/varhub";
 
 const resolveFunction: NetworkConfig["resolveFunction"] & {} = (hostname, callback) => {
 	const m = hostname.match(/\d+\.\d+\.\d+\.\d+/g);
@@ -54,7 +55,8 @@ const fetchFunction: typeof fetch = async (url, params) => {
 }
 
 function createApi(conf?: NetworkConfig): {fetch: (url: string, params?: FetchParams) => Promise<FetchResult>} & Disposable {
-	return new (createNetworkApi({...conf, resolveFunction, fetchFunction}))() as any
+	const room = new Room();
+	return new (createNetworkApi({...conf, resolveFunction, fetchFunction}))(room) as any
 }
 
 describe("ApiNetwork", () => {
@@ -413,7 +415,7 @@ describe("ApiNetwork", () => {
 	
 	it("fetch with custom headers as void function", {timeout: 1500}, async (t) => {
 		const api =createApi({
-			fetchHeaders: (headers) => {headers["x-test"] = "xTestValue"}
+			fetchHeaders: (_room, headers) => {headers["x-test"] = "xTestValue"}
 		});
 		const res = await api.fetch("https://_1.1.1.1_");
 		assert.equal(res.headers["x-test"], "xTestValue", "add custom fetch header");
