@@ -1,3 +1,4 @@
+// @ts-ignore
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { NetworkConfig, default as createNetworkApi, FetchResult, FetchParams } from "../src/index.js";
@@ -11,7 +12,7 @@ const resolveFunction: NetworkConfig["resolveFunction"] & {} = (hostname, callba
 const WRAP_STATUS = [() => "fulfilled", () => "rejected"]
 
 const fetchFunction: typeof fetch = async (url, params) => {
-	return new Promise(async (resolve, reject) => {
+	return new Promise<any>(async (resolve, reject) => {
 		params?.signal?.addEventListener("abort", reject);
 		try {
 			const urlString = String(url);
@@ -21,7 +22,7 @@ const fetchFunction: typeof fetch = async (url, params) => {
 			if (delay) await new Promise(r => setTimeout(r, delay));
 			if (needError) throw new TypeError("fetch failed");
 			
-			const headersObj = Object.fromEntries((params?.headers as Headers).entries());
+			const headersObj = Object.fromEntries((params?.headers as any).entries());
 			const response: Awaited<ReturnType<typeof fetch>> = {
 				url: urlString,
 				headers: new Headers({...headersObj, test: "headerTest"}),
@@ -50,7 +51,6 @@ const fetchFunction: typeof fetch = async (url, params) => {
 			reject(e)
 		}
 	});
-	
 }
 
 function createApi(conf?: NetworkConfig): {fetch: (url: string, params?: FetchParams) => Promise<FetchResult>} & Disposable {
@@ -115,7 +115,7 @@ describe("ApiNetwork", () => {
 		await assert.rejects(() => api.fetch("https://_10.10.10.10_"), "4 not ok");
 	});
 
-	it("fetch pool", {timeout: 500, todo: true}, async (t) => {
+	it("fetch pool", {timeout: 500}, async (t) => {
 		const api =createApi({
 			fetchPoolTimeout: 50,
 			fetchPoolCount: 3,
@@ -162,7 +162,7 @@ describe("ApiNetwork", () => {
 		assert.deepEqual(completeTasks, {f1: true, f2: true, f3: true, f4: true, f5: true, f6: true, f7: true});
 	});
 
-	it("fetch max active", {timeout: 500, todo: true}, async (t) => {
+	it("fetch max active", {timeout: 500}, async (t) => {
 		const api =createApi({
 			fetchMaxActiveCount: 3,
 			fetchAllowIp: true
@@ -389,9 +389,33 @@ describe("ApiNetwork", () => {
 		assert.equal(r2, "fulfilled", "fetch 2 ok")
 		assert.equal(r3, "fulfilled", "fetch 3 ok")
 		assert.equal(r4, "fulfilled", "fetch 4 ok")
-		assert.equal(r5, "fulfilled", "fetch 5 fail")
+		assert.equal(r5, "fulfilled", "fetch 5 ok")
 		assert.equal(r6, "rejected", "fetch 6 fail")
 		assert.equal(r7, "rejected", "fetch 7 fail")
 		assert.equal(r8, "rejected", "fetch 8 fail")
 	});
+	
+	it("fetch with custom headers", {timeout: 1500}, async (t) => {
+		const api =createApi({
+			fetchHeaders: {"x-test": "xTestValue"}
+		});
+		const res = await api.fetch("https://_1.1.1.1_");
+		assert.equal(res.headers["x-test"], "xTestValue", "add custom fetch header");
+	});
+	
+	it("fetch with custom headers as function returns object", {timeout: 1500}, async (t) => {
+		const api =createApi({
+			fetchHeaders: () => ({"x-test": "xTestValue"})
+		});
+		const res = await api.fetch("https://_1.1.1.1_");
+		assert.equal(res.headers["x-test"], "xTestValue", "add custom fetch header");
+	})
+	
+	it("fetch with custom headers as void function", {timeout: 1500}, async (t) => {
+		const api =createApi({
+			fetchHeaders: (headers) => {headers["x-test"] = "xTestValue"}
+		});
+		const res = await api.fetch("https://_1.1.1.1_");
+		assert.equal(res.headers["x-test"], "xTestValue", "add custom fetch header");
+	})
 })

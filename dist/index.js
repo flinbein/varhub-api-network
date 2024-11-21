@@ -9,7 +9,7 @@ export default function createApi(config = {}) {
     const fetchAllowIp = config.fetchAllowIp ?? false;
     const whitelistMasks = config.ipWhitelist?.map(mask => new Netmask(mask));
     const blacklistMasks = config.ipBlacklist?.map(mask => new Netmask(mask));
-    const fetchHeaders = { ...config.fetchHeaders };
+    const fetchHeaders = typeof config.fetchHeaders === "function" ? config.fetchHeaders : { ...config.fetchHeaders };
     const fetchFn = config.fetchFunction ?? fetch;
     const resolveFn = config.resolveFunction ?? resolve;
     class ApiNetwork {
@@ -76,8 +76,17 @@ export default function createApi(config = {}) {
                         headers.set(headerName, String(param.headers[headerName]));
                     }
                 }
-                for (let headerName in fetchHeaders) {
-                    headers.set(headerName, String(fetchHeaders[headerName]));
+                if (typeof fetchHeaders === "function") {
+                    const headersObj = { ...param.headers };
+                    const headersResult = fetchHeaders(headersObj) ?? headersObj;
+                    for (let headerName in headersResult) {
+                        headers.set(headerName, String(headersResult[headerName]));
+                    }
+                }
+                else {
+                    for (let headerName in fetchHeaders) {
+                        headers.set(headerName, String(fetchHeaders[headerName]));
+                    }
                 }
                 if (param.timeout && param.timeout > 0) {
                     const timeout = +param.timeout;
